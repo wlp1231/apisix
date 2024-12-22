@@ -591,14 +591,18 @@ function _M.upgrade_version(self, new_ver)
 end
 
 
+-- sync_data 函数是一个核心的同步操作函数，
+-- 它用于从 Etcd 拉取配置数据，并根据拉取到的数据更新本地的配置状态
 local function sync_data(self)
     if not self.key then
         return nil, "missing 'key' arguments"
     end
 
+    -- 调用 init_watch_ctx(self.key) 初始化 Etcd 监视上下文，准备进行 Etcd 变更的监听
     init_watch_ctx(self.key)
 
     if self.need_reload then
+        -- 调用 readdir 从 Etcd 获取指定路径下的数据
         local res, err = readdir(self.etcd_cli, self.key)
         if not res then
             return false, err
@@ -622,6 +626,7 @@ local function sync_data(self)
         return true
     end
 
+    -- 如果 need_reload 为 false，则进入定时检查变更的过程，使用 waitdir(self) 来等待和获取 Etcd 数据变更
     local dir_res, err = waitdir(self)
     log.info("waitdir key: ", self.key, " prev_index: ", self.prev_index + 1)
     log.info("res: ", json.delay_encode(dir_res, true), ", err: ", err)
@@ -637,6 +642,7 @@ local function sync_data(self)
         return false, err
     end
 
+    -- 解析 dir_res.body.node 中的数据（即配置项）
     local res = dir_res.body.node
     local err_msg = dir_res.body.message
     if err_msg then
@@ -647,6 +653,7 @@ local function sync_data(self)
         return false, err
     end
 
+    -- 校验数据有效性
     local res_copy = res
     -- waitdir will return [res] even for self.single_item = true
     for _, res in ipairs(res_copy) do
@@ -682,6 +689,7 @@ local function sync_data(self)
         end
 
         -- the modifiedIndex tracking should be updated regardless of the validity of the config
+        -- 更新本地配置数据
         self:upgrade_version(res.modifiedIndex)
 
         if not data_valid then
@@ -758,6 +766,7 @@ local function sync_data(self)
 
         -- /plugins' filter need to known self.values when it is called
         -- so the filter should be called after self.values set.
+        -- 如果定义了过滤器 self.filter，在配置更新后执行该过滤器
         if self.filter then
             self.filter(res)
         end
@@ -929,12 +938,16 @@ end
 --        -- called once before reload for sync data from admin
 --    end,
 --})
+
+-- 从etcd获取路由表
 function _M.new(key, opts)
+    --  加载本地配置
     local local_conf, err = config_local.local_conf()
     if not local_conf then
         return nil, err
     end
 
+    -- 提取 etcd 配置参数
     local etcd_conf = local_conf.etcd
     local prefix = etcd_conf.prefix
     local resync_delay = etcd_conf.resync_delay
@@ -953,6 +966,7 @@ function _M.new(key, opts)
     local single_item = opts and opts.single_item
     local checker = opts and opts.checker
 
+    -- 创建一个新的配置对象 obj，并将默认值初始化到对象中
     local obj = setmetatable({
         etcd_cli = nil,
         key = key and prefix .. key,
@@ -981,6 +995,7 @@ function _M.new(key, opts)
             return nil, "missing `key` argument"
         end
 
+        -- 如果 loaded_configuration 中已加载过该配置，则直接使用缓存数据，并通过 load_full_data 方法加载完整配置
         if loaded_configuration[key] then
             local res = loaded_configuration[key]
             loaded_configuration[key] = nil -- tried to load
@@ -991,9 +1006,11 @@ function _M.new(key, opts)
             load_full_data(obj, dir_res, headers)
         end
 
+        -- 启动一个定时器任务 ngx_timer_at，在后台定期调用 _automatic_fetch 来从 etcd 获取配置并更新。
         ngx_timer_at(0, _automatic_fetch, obj)
 
     else
+        -- 调用 get_etcd() 方法获取 etcd 客户端实例
         local etcd_cli, err = get_etcd()
         if not etcd_cli then
             return nil, "failed to start an etcd instance: " .. err

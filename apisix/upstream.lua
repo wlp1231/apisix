@@ -455,12 +455,16 @@ end
 
 
 local function check_upstream_conf(in_dp, conf)
+    -- 如果不是数据面，则进行额外的配置校验（适用于控制面）
     if not in_dp then
+        -- 使用 core.schema.check 方法，根据预定义的 upstream Schema 对配置 conf 进行校验。
         local ok, err = core.schema.check(core.schema.upstream, conf)
         if not ok then
             return false, "invalid configuration: " .. err
         end
 
+        -- 节点配置校验
+        -- 如果 nodes 是非数组（即键值对形式），逐一检查每个地址的端口是否在合法范围（1-65535）
         if conf.nodes and not core.table.isarray(conf.nodes) then
             local port
             for addr,_ in pairs(conf.nodes) do
@@ -473,6 +477,8 @@ local function check_upstream_conf(in_dp, conf)
             end
         end
 
+        -- SSL 客户端证书校验
+        -- 验证 tls.client_cert_id 指定的客户端证书
         local ssl_id = conf.tls and conf.tls.client_cert_id
         if ssl_id then
             local key = "/ssls/" .. ssl_id
@@ -497,11 +503,13 @@ local function check_upstream_conf(in_dp, conf)
         end
 
         -- encrypt the key in the admin
+        -- 对客户端私钥 client_key 加密，防止敏感数据泄漏。
         if conf.tls and conf.tls.client_key then
             conf.tls.client_key = apisix_ssl.aes_encrypt_pkey(conf.tls.client_key)
         end
     end
 
+    -- 当 pass_host 配置为 rewrite 时，必须配置 upstream_host
     if is_http then
         if conf.pass_host == "rewrite" and
             (conf.upstream_host == nil or conf.upstream_host == "")
@@ -510,6 +518,7 @@ local function check_upstream_conf(in_dp, conf)
         end
     end
 
+    -- 校验 tls.client_cert 和 tls.client_key 是否匹配
     if conf.tls and conf.tls.client_cert then
         local cert = conf.tls.client_cert
         local key = conf.tls.client_key
@@ -519,14 +528,17 @@ local function check_upstream_conf(in_dp, conf)
         end
     end
 
+    -- 如果 upstream 类型不是 chash（一致性哈希），直接返回 true
     if conf.type ~= "chash" then
         return true
     end
 
+    -- 当 hash_on 配置不是 consumer 时，必须指定 key
     if conf.hash_on ~= "consumer" and not conf.key then
         return false, "missing key"
     end
 
+    -- 根据 hash_on 的值，获取对应的键校验 Schema，并检查 key 是否符合要求
     local key_schema, err = get_chash_key_schema(conf.hash_on)
     if err then
         return false, "type is chash, err: " .. err

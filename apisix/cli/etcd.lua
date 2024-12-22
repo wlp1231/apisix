@@ -40,6 +40,7 @@ local _M = {}
 -- Timeout for all I/O operations
 http.TIMEOUT = 3
 
+-- 解析版本号
 local function parse_semantic_version(ver)
     local errmsg = "invalid semantic version: " .. ver
 
@@ -73,6 +74,7 @@ local function parse_semantic_version(ver)
 end
 
 
+-- 比较两个版本号的大小
 local function compare_semantic_version(v1, v2)
     local ver1, err = parse_semantic_version(v1)
     if not ver1 then
@@ -96,6 +98,7 @@ local function compare_semantic_version(v1, v2)
 end
 
 
+-- 发送请求
 local function request(url, yaml_conf)
     local response_body = {}
     local single_request = false
@@ -153,6 +156,7 @@ local function prepare_dirs_via_http(yaml_conf, args, index, host, host_count)
     local auth_token
     local user = yaml_conf.etcd.user
     local password = yaml_conf.etcd.password
+    -- 身份验证处理，如果存在用户
     if user and password then
         local auth_url = host .. "/v3/auth/authenticate"
         local json_auth = {
@@ -309,6 +313,7 @@ function _M.init(env, args)
         yaml_conf.etcd.host = {yaml_conf.etcd.host}
     end
 
+    -- 检查 ETCD 主机协议是否一致
     local host_count = #(yaml_conf.etcd.host)
     local scheme
     for i = 1, host_count do
@@ -325,7 +330,7 @@ function _M.init(env, args)
         end
     end
 
-    -- check the etcd cluster version
+    -- 检查 ETCD 集群版本，遍历所有 ETCD 主机，向每个主机的 /version 端点发送请求，检查 ETCD 集群的版本是否符合要求。
     local etcd_healthy_hosts = {}
     for index, host in ipairs(yaml_conf.etcd.host) do
         local version_url = host .. "/version"
@@ -379,6 +384,7 @@ function _M.init(env, args)
         util.die("the etcd cluster needs at least 50% and above healthy nodes\n")
     end
 
+    -- 尝试初始化目录
     local etcd_ok = false
     for index, host in ipairs(etcd_healthy_hosts) do
         if prepare_dirs(yaml_conf, args, index, host, host_count) then

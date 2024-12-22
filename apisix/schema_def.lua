@@ -1032,7 +1032,7 @@ _M.plugin_injected_schema = {
     }
 }
 
-
+-- 继承schema.lua
 setmetatable(_M, {
     __index = schema,
     __newindex = function() error("no modification allowed") end,

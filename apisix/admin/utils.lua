@@ -23,7 +23,7 @@ local pairs = pairs
 
 local _M = {}
 
-
+-- 确保配置中 create_time 和 update_time 的正确性
 local function inject_timestamp(conf, prev_conf, patch_conf)
     if not conf.create_time then
         if prev_conf and (prev_conf.node or prev_conf.list).value.create_time then
@@ -51,15 +51,24 @@ _M.inject_timestamp = inject_timestamp
 
 
 function _M.inject_conf_with_prev_conf(kind, key, conf)
+    --  从 etcd 获取资源
     local res, err = core.etcd.get(key)
     if not res or (res.status ~= 200 and res.status ~= 404) then
         core.log.error("failed to get " .. kind .. "[", key, "] from etcd: ", err or res.status)
         return nil, err
     end
 
+    -- 根据状态码处理时间戳
+    -- 根据资源是否存在（由 etcd 返回的状态码决定），对新配置 conf 注入时间戳。
+    -- 调用 inject_timestamp 方法：
+    -- 如果资源不存在（404），仅对新配置 conf 注入时间戳。
+    -- 如果资源存在（200），结合现有配置 res.body 注入时间戳。
     if res.status == 404 then
         inject_timestamp(conf)
     else
+        -- 时间戳注入的具体逻辑由 inject_timestamp 方法实现，通常包括：
+        -- 添加创建时间（create_time）。
+        -- 更新修改时间（update_time）。
         inject_timestamp(conf, res.body)
     end
 

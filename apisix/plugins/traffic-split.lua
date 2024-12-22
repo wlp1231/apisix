@@ -227,6 +227,7 @@ local function new_rr_obj(weighted_upstreams)
 end
 
 
+-- 用于根据流量分配规则将请求路由到指定的上游（upstream）
 function _M.access(conf, ctx)
     if not conf or not conf.rules then
         return
@@ -235,6 +236,8 @@ function _M.access(conf, ctx)
     local weighted_upstreams
     local match_passed = true
 
+    -- 如果 weighted_upstreams 配置了 upstream_id，则通过 upstream.get_by_id 检查该 ID 是否有效。
+    -- 如果获取失败，返回 HTTP 500 错误和错误信息
     for _, rule in ipairs(conf.rules) do
         -- check if all upstream_ids are valid
         if rule.weighted_upstreams then
@@ -250,12 +253,16 @@ function _M.access(conf, ctx)
             end
         end
 
+        -- 如果 rule.match 未定义，则认为规则自动匹配成功，并直接选择 weighted_upstreams 进行后续处理
         if not rule.match then
             match_passed = true
             weighted_upstreams = rule.weighted_upstreams
             break
         end
 
+        -- 遍历规则中的每个匹配条件（single_match）。
+        -- 使用 expr.new(single_match.vars) 创建匹配表达式。
+        -- 用 expr:eval(ctx.var) 判断当前请求上下文的变量是否满足条件
         for _, single_match in ipairs(rule.match) do
             local expr, err = expr.new(single_match.vars)
             if err then
@@ -269,6 +276,7 @@ function _M.access(conf, ctx)
             end
         end
 
+        -- 如果规则匹配成功，选择该规则的 weighted_upstreams 进行后续处理，并退出规则循环
         if match_passed then
             weighted_upstreams = rule.weighted_upstreams
             break
@@ -281,12 +289,15 @@ function _M.access(conf, ctx)
         return
     end
 
+    -- 使用 lrucache 缓存和构造负载均衡器对象（rr_up）。
+    -- weighted_upstreams 是权重分配的上游列表
     local rr_up, err = lrucache(weighted_upstreams, nil, new_rr_obj, weighted_upstreams)
     if not rr_up then
         core.log.error("lrucache roundrobin failed: ", err)
         return 500
     end
 
+    -- 使用负载均衡器的 find 方法，选择一个目标上游
     local upstream = rr_up:find()
     if upstream and type(upstream) == "table" then
         core.log.info("upstream: ", core.json.encode(upstream))

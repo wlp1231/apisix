@@ -19,6 +19,7 @@ local etcd = require("apisix.cli.etcd")
 local util = require("apisix.cli.util")
 local file = require("apisix.cli.file")
 local schema = require("apisix.cli.schema")
+-- nginx.conf 生成模板
 local ngx_tpl = require("apisix.cli.ngx_tpl")
 local cli_ip = require("apisix.cli.ip")
 local profile = require("apisix.core.profile")
@@ -153,7 +154,9 @@ local function get_lua_path(conf)
 end
 
 
+-- 初始化apisix
 local function init(env)
+    -- 检查是否运行在 /root 目录下
     if env.is_root_path then
         print('Warning! Running apisix under /root is only suitable for '
               .. 'development environments and it is dangerous to do so. '
@@ -161,6 +164,7 @@ local function init(env)
               .. 'other than /root.')
     end
 
+    -- 检查文件描述符（ulimit）限制
     local min_ulimit = 1024
     if env.ulimit ~= "unlimited" and env.ulimit <= min_ulimit then
         print(str_format("Warning! Current maximum number of open file "
@@ -170,6 +174,7 @@ local function init(env)
     end
 
     -- read_yaml_conf
+    -- 读取并验证配置文件
     local yaml_conf, err = file.read_yaml_conf(env.apisix_home)
     if not yaml_conf then
         util.die("failed to read local yaml config of apisix: ", err, "\n")
@@ -181,6 +186,7 @@ local function init(env)
     end
 
     -- check the Admin API token
+    -- 检查 Admin API 的访问权限，如果仅允许本地网络（127.0.0.0/24），则直接将 checked_admin_key 设置为 true。
     local checked_admin_key = false
     local allow_admin = yaml_conf.deployment.admin and
         yaml_conf.deployment.admin.allow_admin
@@ -188,7 +194,9 @@ local function init(env)
        and #allow_admin == 1 and allow_admin[1] == "127.0.0.0/24" then
         checked_admin_key = true
     end
+
     -- check if admin_key is required
+    -- 检查是否禁用了 Admin Key
     if yaml_conf.deployment.admin.admin_key_required == false then
         checked_admin_key = true
         print("Warning! Admin key is bypassed! "
@@ -196,6 +204,7 @@ local function init(env)
                 .. "please enable `admin_key_required` and set a secure admin key!")
     end
 
+    -- 验证 Admin API 的密钥配置
     if yaml_conf.apisix.enable_admin and not checked_admin_key then
         local help = [[
 
@@ -208,11 +217,13 @@ Please modify "admin_key" in conf/config.yaml .
             admin_key = admin_key.admin_key
         end
 
+        -- 如果没有有效的 admin_key，直接输出错误并终止程序
         if type(admin_key) ~= "table" or #admin_key == 0
         then
             util.die(help:format("ERROR: missing valid Admin API token."))
         end
 
+        -- 如果密钥为空，会输出警告信息，并提示 APISIX 将自动生成一个随机的 Admin API 密钥
         for _, admin in ipairs(admin_key) do
             if type(admin.key) == "table" then
                 admin.key = ""
@@ -230,6 +241,7 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 如果启用了 Admin API 的 HTTPS 功能（https_admin），则必须配置有效的 SSL 证书和密钥
     if yaml_conf.deployment.admin then
         local admin_api_mtls = yaml_conf.deployment.admin.admin_api_mtls
         local https_admin = yaml_conf.deployment.admin.https_admin
@@ -243,12 +255,16 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 如果启用了 Admin API，则配置提供者不能是 yaml，必须使用 etcd
     if yaml_conf.apisix.enable_admin and
         yaml_conf.deployment.config_provider == "yaml"
     then
         util.die("ERROR: Admin API can only be used with etcd config_provider.\n")
     end
 
+    -- 检查是否安装了 OpenResty，如果未找到，直接中止。
+    -- 检查 OpenResty 版本是否满足最低要求（1.21.4），如果版本过低，输出错误并终止。
+    -- 确保 OpenResty 编译时包含 http_stub_status_module 模块（用于统计和监控），缺少则中止程序。
     local or_ver = get_openresty_version()
     if or_ver == nil then
         util.die("can not find openresty\n")
@@ -265,6 +281,8 @@ Please modify "admin_key" in conf/config.yaml .
                  "your openresty, please check it out.\n")
     end
 
+    -- 默认启用 HTTP，Stream 关闭。
+    -- 根据配置启用单一模式或混合模式（HTTP + Stream）。
     --- http is enabled by default
     local enable_http = true
     --- stream is disabled by default
@@ -285,25 +303,32 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 读取 yaml_conf.discovery 配置（服务发现相关配置），并将所有启用的服务发现模块存储在 enabled_discoveries 表中。
+    -- 如果 yaml_conf.discovery 不存在，则返回一个空表
     local enabled_discoveries = {}
     for name in pairs(yaml_conf.discovery or {}) do
         enabled_discoveries[name] = true
     end
 
+    -- 遍历 yaml_conf.plugins（HTTP 插件列表），将每个插件名标记为启用，存入 enabled_plugins 表。
     local enabled_plugins = {}
     for i, name in ipairs(yaml_conf.plugins or {}) do
         enabled_plugins[name] = true
     end
 
+    -- 遍历 yaml_conf.stream_plugins（Stream 插件列表），将每个插件名标记为启用，存入 enabled_stream_plugins 表。
     local enabled_stream_plugins = {}
     for i, name in ipairs(yaml_conf.stream_plugins or {}) do
         enabled_stream_plugins[name] = true
     end
 
+    -- 如果启用了插件 proxy-cache，则必须确保配置文件中存在 yaml_conf.apisix.proxy_cache 配置项。
     if enabled_plugins["proxy-cache"] and not yaml_conf.apisix.proxy_cache then
         util.die("missing apisix.proxy_cache for plugin proxy-cache\n")
     end
 
+    -- batch-requests 插件依赖于 real_ip_from 配置，用于正确传递客户端 IP 地址。
+    -- 该检查确保用户配置环境满足插件要求
     if enabled_plugins["batch-requests"] then
         local pass_real_client_ip = false
         local real_ip_from = yaml_conf.nginx_config.http.real_ip_from
@@ -326,8 +351,19 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 解析并验证 Apache APISIX 的监听地址和端口配置，确保每个服务或插件使用的端口不冲突
+    -- 用于记录已经分配的端口及其对应的名称，防止多个服务或插件监听相同的端口
     local ports_to_check = {}
 
+    -- 验证并生成监听地址（ip:port 格式）。
+    -- 检查指定端口是否已被其他服务占用。
+    -- 确定监听的 IP 和端口：
+    -- 优先使用配置文件中的 IP 和端口。
+    -- 如果未配置，使用默认值。
+    -- 检查端口是否冲突：
+    -- 如果当前端口已存在于 ports_to_check 中，报错并退出。
+    -- 记录端口到 ports_to_check，以防后续冲突。
+    -- 返回最终的监听地址，格式为 ip:port。
     local function validate_and_get_listen_addr(port_name, default_ip, configured_ip,
                                                 default_port, configured_port)
         local ip = configured_ip or default_ip
@@ -340,6 +376,7 @@ Please modify "admin_key" in conf/config.yaml .
     end
 
     -- listen in admin use a separate port, support specific IP, compatible with the original style
+    -- 如果启用了 Admin 服务，读取其 IP 和端口配置，默认监听 0.0.0.0:9180
     local admin_server_addr
     if yaml_conf.apisix.enable_admin then
         local ip = yaml_conf.deployment.admin.admin_listen.ip
@@ -348,6 +385,7 @@ Please modify "admin_key" in conf/config.yaml .
                                                           9180, port)
     end
 
+    -- 如果启用了 Control 服务，默认监听 127.0.0.1:9090
     local control_server_addr
     if yaml_conf.apisix.enable_control then
         if not yaml_conf.apisix.control then
@@ -360,6 +398,7 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 如果启用了 Prometheus 插件，并且启用了导出服务 (enable_export_server)，则配置监听地址。
     local prometheus_server_addr
     if yaml_conf.plugin_attr.prometheus then
         local prometheus = yaml_conf.plugin_attr.prometheus
@@ -370,12 +409,24 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 如果启用了 Stream 模式的 Prometheus 插件，但未配置 Prometheus 导出服务，报错退出。
     if enabled_stream_plugins["prometheus"] and not prometheus_server_addr then
         util.die("L4 prometheus metric should be exposed via export server\n")
     end
 
     local ip_port_to_check = {}
 
+    -- 用于将监听地址（ip:port）添加到指定的 listen_table 中。
+    -- 支持 IPv6 和 HTTP/3 配置
+
+    -- 验证 IP 和端口格式是否正确。
+    -- 检查端口是否冲突：
+    -- 如果端口已被其他服务占用，报错退出。
+    -- 添加监听地址：
+    -- 将监听地址存入 listen_table。
+    -- 确保同一地址不会重复添加。
+    -- 支持 IPv6 地址：
+    -- 如果启用了 IPv6，将 [::]:port 添加到监听地址列表。
     local function listen_table_insert(listen_table, scheme, ip, port,
                                 enable_http3, enable_ipv6)
         if type(ip) ~= "string" then
@@ -419,8 +470,10 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 初始化一个空表，用于存储解析后的 HTTP 服务监听地址。
     local node_listen = {}
     -- listen in http, support multiple ports and specific IP, compatible with the original style
+    -- 单端口监听和多端口监听
     if type(yaml_conf.apisix.node_listen) == "number" then
         listen_table_insert(node_listen, "http", "0.0.0.0", yaml_conf.apisix.node_listen,
                 false, yaml_conf.apisix.enable_ipv6)
@@ -459,6 +512,8 @@ Please modify "admin_key" in conf/config.yaml .
     end
     yaml_conf.apisix.node_listen = node_listen
 
+    -- 初始化 HTTPS 服务监听表 ssl_listen。
+    -- 定义变量 enable_http3_in_server_context，用于检测是否启用了 HTTP/3
     local enable_http3_in_server_context = false
     local ssl_listen = {}
     -- listen in https, support multiple ports, support specific IP
@@ -501,6 +556,7 @@ Please modify "admin_key" in conf/config.yaml .
     yaml_conf.apisix.enable_http3_in_server_context = enable_http3_in_server_context
 
 
+    -- 处理 SSL 配置的检查与默认设置，以及处理 Stream TCP 代理中的 SSL 启用
     if yaml_conf.apisix.ssl.ssl_trusted_certificate ~= nil then
         local cert_path = yaml_conf.apisix.ssl.ssl_trusted_certificate
         -- During validation, the path is relative to PWD
@@ -534,6 +590,7 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 允许用户通过配置来调整上游连接复用的数量，如果没有提供，则默认值为 32
     local dubbo_upstream_multiplex_count = 32
     if yaml_conf.plugin_attr and yaml_conf.plugin_attr["dubbo-proxy"] then
         local dubbo_conf = yaml_conf.plugin_attr["dubbo-proxy"]
@@ -542,6 +599,7 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 验证 DNS 解析器的有效期配置，确保其是一个有效的数值
     if yaml_conf.apisix.dns_resolver_valid then
         if tonumber(yaml_conf.apisix.dns_resolver_valid) == nil then
             util.die("apisix->dns_resolver_valid should be a number")
@@ -553,6 +611,7 @@ Please modify "admin_key" in conf/config.yaml .
         proxy_mirror_timeouts = yaml_conf.plugin_attr["proxy-mirror"].timeout
     end
 
+    -- 确保在部署为控制平面时，如果没有指定管理服务器地址，则自动使用 node_listen 配置中的第一个监听地址作为管理员接口的地址
     if yaml_conf.deployment and yaml_conf.deployment.role then
         local role = yaml_conf.deployment.role
         env.deployment_role = role
@@ -563,6 +622,7 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 检查这两个插件是否启用
     local opentelemetry_set_ngx_var
     if enabled_plugins["opentelemetry"] and yaml_conf.plugin_attr["opentelemetry"] then
         opentelemetry_set_ngx_var = yaml_conf.plugin_attr["opentelemetry"].set_ngx_var
@@ -574,6 +634,7 @@ Please modify "admin_key" in conf/config.yaml .
     end
 
     -- Using template.render
+    -- 初始化系统配置 
     local sys_conf = {
         lua_path = env.pkg_path_org,
         lua_cpath = env.pkg_cpath_org,
@@ -597,6 +658,7 @@ Please modify "admin_key" in conf/config.yaml .
         zipkin_set_ngx_var = zipkin_set_ngx_var
     }
 
+    -- 校验是否读取到 apisix 和 nginx_config 配置
     if not yaml_conf.apisix then
         util.die("failed to read `apisix` field from yaml file")
     end
@@ -605,12 +667,14 @@ Please modify "admin_key" in conf/config.yaml .
         util.die("failed to read `nginx_config` field from yaml file")
     end
 
+    -- 根据当前架构（32 位或 64 位），设置 worker_rlimit_core，即进程的最大内存限制。
     if util.is_32bit_arch() then
         sys_conf["worker_rlimit_core"] = "4G"
     else
         sys_conf["worker_rlimit_core"] = "16G"
     end
 
+    -- 将 yaml_conf 中的字段合并到 sys_conf
     for k,v in pairs(yaml_conf.apisix) do
         sys_conf[k] = v
     end
@@ -624,7 +688,7 @@ Please modify "admin_key" in conf/config.yaml .
     end
     sys_conf["wasm"] = yaml_conf.wasm
 
-
+    --  确保文件描述符限制合理
     local wrn = sys_conf["worker_rlimit_nofile"]
     local wc = sys_conf["event"]["worker_connections"]
     if not wrn or wrn <= wc then
@@ -640,6 +704,7 @@ Please modify "admin_key" in conf/config.yaml .
         sys_conf["worker_processes"] = "auto"
     end
 
+    -- 如果 dns_resolver 配置项为空或没有 DNS 地址，尝试从 /etc/resolv.conf 读取 DNS 配置
     local dns_resolver = sys_conf["dns_resolver"]
     if not dns_resolver or #dns_resolver == 0 then
         local dns_addrs, err = local_dns_resolver("/etc/resolv.conf")
@@ -672,6 +737,7 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 处理导出的环境变量。如果配置了 envs，会检查 exported_vars 中是否存在对应的环境变量，且将有效的环境变量添加到 sys_conf["envs"] 中。
     local env_worker_processes = getenv("APISIX_WORKER_PROCESSES")
     if env_worker_processes then
         sys_conf["worker_processes"] = floor(tonumber(env_worker_processes))
@@ -702,6 +768,7 @@ Please modify "admin_key" in conf/config.yaml .
     end
 
     -- inject kubernetes discovery shared dict and environment variable
+    -- 获取 Kubernetes 服务发现的相关配置 kubernetes_conf
     if enabled_discoveries["kubernetes"] then
 
         if not sys_conf["discovery_shared_dicts"] then
@@ -710,6 +777,7 @@ Please modify "admin_key" in conf/config.yaml .
 
         local kubernetes_conf = yaml_conf.discovery["kubernetes"]
 
+        -- 将 kubernetes 配置中的 service.host、service.port、client.token 和 client.token_file 等键值注入到 envs 环境变量表中
         local inject_environment = function(conf, envs)
             local keys = {
                 conf.service.host,
@@ -760,9 +828,11 @@ Please modify "admin_key" in conf/config.yaml .
     end
 
     -- fix up lua path
+    -- 调用 get_lua_path 函数将 yaml_conf.apisix.extra_lua_path 和 yaml_conf.apisix.extra_lua_cpath 配置中的路径添加到 sys_conf 中
     sys_conf["extra_lua_path"] = get_lua_path(yaml_conf.apisix.extra_lua_path)
     sys_conf["extra_lua_cpath"] = get_lua_path(yaml_conf.apisix.extra_lua_cpath)
 
+    -- 生成 NGINX 配置文件 (nginx.conf)
     local conf_render = template.compile(ngx_tpl)
     local ngxconf = conf_render(sys_conf)
 
@@ -805,6 +875,7 @@ end
 
 
 local function start(env, ...)
+    -- 清理环境
     cleanup(env)
 
     if env.apisix_home then
@@ -829,6 +900,7 @@ local function start(env, ...)
     end
 
     -- check running and wait old apisix stop
+    -- 检查旧的 APISIX 实例是否正在运行
     local pid = nil
     for i = 1, 30 do
         local running
@@ -863,14 +935,16 @@ local function start(env, ...)
     end
 
     -- start a new APISIX instance
-
+    --  启动新实例的解析器配置
     local parser = argparse()
     parser:argument("_", "Placeholder")
+    -- 指定自定义的 config.yaml 配置文件
     parser:option("-c --config", "location of customized config.yaml")
     -- TODO: more logs for APISIX cli could be added using this feature
     parser:flag("-v --verbose", "show init_etcd debug information")
     local args = parser:parse()
 
+    -- 处理自定义配置文件
     local customized_yaml = args["config"]
     if customized_yaml then
         local customized_yaml_path
@@ -897,12 +971,14 @@ local function start(env, ...)
         print("Use customized yaml: ", customized_yaml)
     end
 
+    -- 初始化 APISIX 和 Etcd
     init(env)
 
     if env.deployment_role ~= "data_plane" then
         init_etcd(env, args)
     end
 
+    -- 启动 OpenResty，使用初始化apisix时生成的nginx.conf
     util.execute_cmd(env.openresty_args)
 end
 
@@ -988,7 +1064,7 @@ local function reload(env)
 end
 
 
-
+-- 包含了命令名称到对应函数的映射
 local action = {
     help = help,
     version = version,
@@ -1014,6 +1090,7 @@ function _M.execute(env, arg)
         return help()
     end
 
+    -- 执行对应的映射函数
     action[cmd_action](env, arg[2])
 end
 

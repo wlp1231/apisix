@@ -29,6 +29,7 @@ local tonumber = tonumber
 
 return function (apisix_home, pkg_cpath_org, pkg_path_org)
     -- ulimit setting should be checked when APISIX starts
+    -- 通过 ulimit -n 命令检查系统允许打开的最大文件描述符数
     local res, err = util.execute_cmd("ulimit -n")
     if not res then
         error("failed to exec ulimit cmd \'ulimit -n \', err: " .. err)
@@ -42,6 +43,7 @@ return function (apisix_home, pkg_cpath_org, pkg_path_org)
     -- only for developer, use current folder as working space
     local is_root_path = false
     local script_path = arg[0]
+    -- 判断是否使用当前路径
     if script_path:sub(1, 2) == './' then
         apisix_home = util.trim(util.execute_cmd("pwd"))
         if not apisix_home then
@@ -67,6 +69,7 @@ return function (apisix_home, pkg_cpath_org, pkg_path_org)
 
     do
         -- skip luajit environment
+        -- 检查 Lua 的 cjson 库是否与OpenResty 自带的 cjson 冲突
         local ok = pcall(require, "table.new")
         if not ok then
             local ok, json = pcall(require, "cjson")
@@ -80,6 +83,8 @@ return function (apisix_home, pkg_cpath_org, pkg_path_org)
     end
 
     -- pre-transform openresty path
+    -- 通过 command -v openresty 检查 OpenResty 是否已安装，并获取其路径。
+    -- 然后构造用于启动 OpenResty 的命令行参数 openresty_args
     res, err = util.execute_cmd("command -v openresty")
     if not res then
         error("failed to exec cmd \'command -v openresty\', err: " .. err)
@@ -94,6 +99,7 @@ return function (apisix_home, pkg_cpath_org, pkg_path_org)
         error("failed to exec cmd \'openresty -V 2>&1\', err: " .. err)
     end
 
+    -- 是否使用 APISIX 提供的定制版 OpenResty（带有 apisix-nginx-module 模块）
     local use_apisix_base = true
     if not or_info:find("apisix-nginx-module", 1, true) then
         use_apisix_base = false
@@ -101,6 +107,7 @@ return function (apisix_home, pkg_cpath_org, pkg_path_org)
 
     local min_etcd_version = "3.4.0"
 
+    -- 返回环境配置信息
     return {
         apisix_home = apisix_home,
         is_root_path = is_root_path,

@@ -135,6 +135,7 @@ function _M.http_init_worker()
         end
     end
 
+    
     plugin.init_worker()
     router.http_init_worker()
     require("apisix.http.service").init_worker()
@@ -341,18 +342,28 @@ local function uri_matches_skip_mtls_route_patterns(ssl, uri)
     end
 end
 
-
+-- 对 HTTPS 客户端证书（mTLS，即双向 TLS）进行验证，以确保客户端证书符合预期。
+-- 包括对 URI、SSL 配置和证书验证结果的检查
 local function verify_https_client(ctx)
+    -- 确认当前请求的协议是否为 HTTPS。
+    -- 如果不是 HTTPS（例如 HTTP），直接返回 true，表示跳过后续验证。
     local scheme = ctx.var.scheme
     if scheme ~= "https" then
         return true
     end
 
     local matched_ssl = ngx.ctx.matched_ssl
+    -- matched_ssl.value.client：表示当前 SSL 配置是否启用了客户端证书验证
     if matched_ssl.value.client
+        -- 定义了需要跳过 mTLS 验证的 URI 正则表达式
         and matched_ssl.value.client.skip_mtls_uri_regex
+        -- 检查当前 APISIX 环境是否支持客户端证书验证
         and apisix_ssl.support_client_verification()
+        -- 确保当前请求 URI 没有被配置为跳过 mTLS 的路由
         and (not uri_matches_skip_mtls_route_patterns(matched_ssl, ngx.var.uri)) then
+        -- 由 NGINX 的 $ssl_client_verify 提供，表示客户端证书验证的结果。可能的值包括：
+        -- SUCCESS：验证通过。
+        -- NONE：未提供客户端证书
         local res = ctx.var.ssl_client_verify
         if res ~= "SUCCESS" then
             if res == "NONE" then
@@ -365,15 +376,19 @@ local function verify_https_client(ctx)
         end
     end
 
+    -- 检查是否有符合 Host 的 SSL 配置，并将匹配到的 SSL 对象存储在 ctx.matched_ssl 中
     local host = ctx.var.host
     local matched = router.router_ssl.match_and_set(ctx, true, host)
+    -- 如果匹配失败（没有对应的 SSL 配置），matched 为 false，函数直接返回 true，不做进一步验证
     if not matched then
         return true
     end
 
     local matched_ssl = ctx.matched_ssl
+    -- 检查当前匹配到的 SSL 配置是否启用了客户端证书验证,检查当前 APISIX 环境是否支持客户端证书验证
     if matched_ssl.value.client and apisix_ssl.support_client_verification() then
         local verified = apisix_base_flags.client_cert_verified_in_handshake
+        -- 如果已经在握手阶段完成了客户端证书验证，则不需要重复验证，直接跳过
         if not verified then
             -- vanilla OpenResty requires to check the verification result
             local res = ctx.var.ssl_client_verify
@@ -388,6 +403,7 @@ local function verify_https_client(ctx)
             end
         end
 
+        -- 检查 SNI 和 Host 是否匹配
         local sni = apisix_ssl.server_name()
         if sni ~= host then
             -- There is a case that the user configures a SSL object with `*.domain`,
@@ -567,29 +583,34 @@ function _M.handle_upstream(api_ctx, route, enable_websocket)
     end
 end
 
-
+-- 处理 HTTP 请求的接入阶段
 function _M.http_access_phase()
-    -- from HTTP/3 to HTTP/1.1 we need to convert :authority pesudo-header
-    -- to Host header, so we set upstream_host variable here.
+    -- 如果请求协议是 HTTP/3，则将 :authority pseudo-header 转换为传统的 Host 头部，赋值给 upstream_host。
     if ngx.req.http_version() == 3 then
+        -- 这里 ngx.var.upstream_host 为 127.0.0.1：9080
         ngx.var.upstream_host = ngx.var.host .. ":" .. ngx.var.server_port
     end
     local ngx_ctx = ngx.ctx
 
-    -- always fetch table from the table pool, we don't need a reused api_ctx
+    -- 使用 tablepool 创建一个新的上下文 api_ctx，分配内存，避免多次创建 Lua 表，目前是空表
     local api_ctx = core.tablepool.fetch("api_ctx", 0, 32)
     ngx_ctx.api_ctx = api_ctx
 
+    -- 调用 core.ctx.set_vars_meta(api_ctx)，为 api_ctx 表的 var 字段设置了元表，实现动态访问 ngx.var
     core.ctx.set_vars_meta(api_ctx)
 
+    -- 调用 verify_https_client() 验证客户端证书或 HTTPS 配置。
     if not verify_https_client(api_ctx) then
         return core.response.exit(400)
     end
 
     debug.dynamic_debug(api_ctx)
 
+    -- URI 规范化和尾部斜杠处理
+    -- "http://127.0.0.1:9080/ip"，获取/ip
     local uri = api_ctx.var.uri
     if local_conf.apisix then
+        -- 如果配置了 delete_uri_tail_slash，会去掉 URI 尾部的 /。
         if local_conf.apisix.delete_uri_tail_slash then
             if str_byte(uri, #uri) == str_byte("/") then
                 api_ctx.var.uri = str_sub(api_ctx.var.uri, 1, #uri - 1)
@@ -597,6 +618,7 @@ function _M.http_access_phase()
             end
         end
 
+        -- 如果启用了 normalize_uri_like_servlet，会将 URI 转换为类似 Servlet 的标准化格式，主要用于处理路径中的分号参数
         if local_conf.apisix.normalize_uri_like_servlet then
             local new_uri, err = normalize_uri_like_servlet(uri)
             if not new_uri then
@@ -614,11 +636,16 @@ function _M.http_access_phase()
     -- To prevent being hacked by untrusted request_uri, here we
     -- record the normalized but not rewritten uri as request_uri,
     -- the original request_uri can be accessed via var.real_request_uri
+    -- 保留真实 url
     api_ctx.var.real_request_uri = api_ctx.var.request_uri
     api_ctx.var.request_uri = api_ctx.var.uri .. api_ctx.var.is_args .. (api_ctx.var.args or "")
 
+    -- 路由匹配
+    -- 调用 router.router_http.match，使用 Radixtree 动态路由匹配算法，匹配请求的 URI 和方法。
+    -- 和etcd中的路由进行比较
     router.router_http.match(api_ctx)
 
+    -- 匹配到的路由
     local route = api_ctx.matched_route
     if not route then
         -- run global rule when there is no matching route
@@ -635,6 +662,8 @@ function _M.http_access_phase()
 
     local enable_websocket = route.value.enable_websocket
 
+    -- 插件配置合并
+    -- 检查当前路由是否关联了一个 插件配置 ID
     if route.value.plugin_config_id then
         local conf = plugin_config.get(route.value.plugin_config_id)
         if not conf then
@@ -642,10 +671,13 @@ function _M.http_access_phase()
                             "id: ", route.value.plugin_config_id)
             return core.response.exit(503)
         end
-
+        -- 使用 plugin_config.merge() 方法，将获取到的插件配置（conf）与路由的配置（route）进行合并
         route = plugin_config.merge(route, conf)
     end
 
+    -- 服务配置合并
+    -- 如果路由配置了 service_id，从 etcd 拉取服务的配置。
+    -- 合并服务配置和路由配置，更新 api_ctx。
     if route.value.service_id then
         local service = service_fetch(route.value.service_id)
         if not service then
@@ -671,17 +703,23 @@ function _M.http_access_phase()
         api_ctx.conf_version = route.modifiedIndex
         api_ctx.conf_id = route.value.id
     end
+
     api_ctx.route_id = route.value.id
     api_ctx.route_name = route.value.name
 
     -- run global rule
+    -- 执行全局插件规则（如限流、鉴权等）
     local global_rules = apisix_global_rules.global_rules()
     plugin.run_global_rules(api_ctx, global_rules, nil)
 
+    -- 如果路由定义了 script，执行用户自定义 Lua 脚本。
     if route.value.script then
         script.load(route, api_ctx)
         script.run("access", api_ctx)
 
+    -- 否则，根据路由筛选插件，并依次运行：
+    -- rewrite 阶段：对请求头、路径等进行重写。
+    -- access 阶段：如鉴权、限流、认证等。
     else
         local plugins = plugin.filter(api_ctx, route)
         api_ctx.plugins = plugins
@@ -691,6 +729,8 @@ function _M.http_access_phase()
             local changed
             local group_conf
 
+            -- 消费者合并配置
+            -- 如果请求关联了消费者（consumer），会合并消费者的配置和路由配置。
             if api_ctx.consumer.group_id then
                 group_conf = consumer_group.get(api_ctx.consumer.group_id)
                 if not group_conf then
@@ -722,6 +762,7 @@ function _M.http_access_phase()
         plugin.run_plugin("access", plugins, api_ctx)
     end
 
+    -- 将处理后的请求上下文传递给 _M.handle_upstream，完成请求的上游代理或 WebSocket 连接。
     _M.handle_upstream(api_ctx, route, enable_websocket)
 end
 
@@ -898,12 +939,21 @@ end
 
 
 local function cors_admin()
+    -- 调用 core.config.local_conf 获取本地配置文件
     local_conf = core.config.local_conf()
     if not core.table.try_read_attr(local_conf, "deployment", "admin", "enable_admin_cors") then
         return
     end
 
+    -- 获取当前请求的方法，例如 GET、POST、OPTIONS 等。
     local method = get_method()
+    -- 针对 OPTIONS 请求设置以下头部
+    -- Access-Control-Allow-Origin: *：允许任意来源的跨域请求。
+    -- Access-Control-Allow-Methods：允许的 HTTP 方法。
+    -- Access-Control-Max-Age: 3600：CORS 配置在浏览器中缓存时间为 3600 秒。
+    -- Access-Control-Allow-Headers: *：允许任意请求头。
+    -- Access-Control-Allow-Credentials: true：允许发送带凭据的跨域请求。
+    -- Content-Length: 0 和 Content-Type: text/plain：表明响应为空，仅用于预检。
     if method == "OPTIONS" then
         core.response.set_header("Access-Control-Allow-Origin", "*",
             "Access-Control-Allow-Methods",
@@ -913,9 +963,15 @@ local function cors_admin()
             "Access-Control-Allow-Credentials", "true",
             "Content-Length", "0",
             "Content-Type", "text/plain")
+        -- 调用 ngx_exit(200) 立即结束请求，返回 HTTP 状态码 200
         ngx_exit(200)
     end
 
+    -- 对非 OPTIONS 请求，设置一些跨域响应头
+    -- Access-Control-Allow-Origin: *：允许任意来源的跨域访问。
+    -- Access-Control-Allow-Credentials: true：允许携带凭据（如 Cookie）。
+    -- Access-Control-Expose-Headers: *：客户端可以访问所有的响应头。
+    -- Access-Control-Max-Age: 3600：跨域配置缓存时间。
     core.response.set_header("Access-Control-Allow-Origin", "*",
                             "Access-Control-Allow-Credentials", "true",
                             "Access-Control-Expose-Headers", "*",
@@ -930,18 +986,26 @@ do
     local router
 
 function _M.http_admin()
+    -- 检查是否已有 router（路由表对象）。如果 router 为 nil，通过 admin_init.get() 获取一个新的路由表实例。
     if not router then
         router = admin_init.get()
     end
 
+    -- 设置 HTTP 响应头中的 Server 字段，值为 ver_header。
     core.response.set_header("Server", ver_header)
     -- add cors rsp header
+    -- 调用 cors_admin 函数为响应头添加 CORS（跨域资源共享）相关的字段
     cors_admin()
 
     -- add content type to rsp header
+    -- 调用 add_content_type 为响应头设置 Content-Type，例如 application/json
     add_content_type()
 
     -- core.log.info("uri: ", get_var("uri"), " method: ", get_method())
+    -- 使用 router:dispatch 方法分发请求：
+    -- get_var("uri")：获取请求的 URI。
+    -- {method = get_method()}：构造一个表，包含当前请求的 HTTP 方法。
+    -- router:dispatch 根据 URI 和方法找到对应的处理函数并执行
     local ok = router:dispatch(get_var("uri"), {method = get_method()})
     if not ok then
         ngx_exit(404)

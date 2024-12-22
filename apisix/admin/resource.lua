@@ -82,16 +82,22 @@ local function check_forbidden_properties(conf, forbidden_properties)
 end
 
 
+-- id：资源的标识符，可能由请求路径或配置字段提供。
+-- conf：待校验的配置对象。
+-- need_id：布尔值，指示是否要求配置中必须包含 id。
+-- typ：资源的类型信息，主要针对特殊资源如 secrets。
+-- allow_time：布尔值，指示是否允许配置中包含时间戳字段（create_time 和 update_time）。
 function _M:check_conf(id, conf, need_id, typ, allow_time)
+    -- 如果当前资源类型为 secrets，则将 id 扩展为 typ/id 的形式
     if self.name == "secrets" then
         id = typ .. "/" .. id
     end
-    -- check if missing configurations
+    -- 检查传入的配置对象 conf 是否为空。
     if not conf then
         return nil, {error_msg = "missing configurations"}
     end
 
-    -- check id if need id
+    -- 如果当前资源类型在 no_id_res 中，则不需要 id，跳过校验
     if not no_id_res[self.name] then
         id = id or conf.id
         if need_id and not id then
@@ -109,7 +115,7 @@ function _M:check_conf(id, conf, need_id, typ, allow_time)
         conf.id = id
     end
 
-    -- check create time and update time
+    -- 校验时间戳字段
     if not allow_time then
         local forbidden_properties = {"create_time", "update_time"}
         local err = check_forbidden_properties(conf, forbidden_properties)
@@ -125,6 +131,7 @@ function _M:check_conf(id, conf, need_id, typ, allow_time)
         core.log.info("schema: ", core.json.delay_encode(self.schema))
     end
 
+    --  调用资源特定规则校验
     local ok, err = self.checker(id, conf, need_id, self.schema, typ)
 
     if not ok then
@@ -228,10 +235,14 @@ end
 
 
 function _M:put(id, conf, sub_path, args)
+    -- 检查是否支持 PUT 方法
     if core.table.array_find(self.unsupported_methods, "put") then
         return 405, {error_msg = "not supported `PUT` method for " .. self.kind}
     end
 
+    -- /初始化关键路径变量
+    -- key：基础路径，用于存储资源的 etcd 键，初始值为 / 加资源名（如 /routes）。
+    -- typ：类型变量，初始化为空，用于特定资源类型的额外处理
     local key = "/" .. self.name
     local typ = nil
     if self.name == "secrets" then
@@ -239,16 +250,21 @@ function _M:put(id, conf, sub_path, args)
         key = key .. "/" .. typ
     end
 
+    -- 校验配置
+    -- 判断该资源是否需要 id
     local need_id = not no_id_res[self.name]
+    -- 校验传入的 conf（配置）是否合法
     local ok, err = self:check_conf(id, conf, need_id, typ)
     if not ok then
         return 400, err
     end
 
+    -- 对于非 secrets 资源，将校验函数返回的值赋给 id
     if self.name ~= "secrets" then
         id = ok
     end
 
+    -- 对 ssls 资源的私钥 key 和多私钥列表 keys 进行加密
     if self.name == "ssls" then
         -- encrypt private key
         conf.key = apisix_ssl.aes_encrypt_pkey(conf.key)
@@ -260,12 +276,15 @@ function _M:put(id, conf, sub_path, args)
         end
     end
 
+    -- 将资源 ID 添加到 key，生成资源的完整 etcd 路径
     key = key .. "/" .. id
 
+    -- 如果定义了 get_resource_etcd_key 方法，使用它生成 etcd 键。
     if self.get_resource_etcd_key then
         key = self.get_resource_etcd_key(id, conf, sub_path, args)
     end
 
+    -- 特殊处理 credentials 资源
     if self.name == "credentials" then
         local consumer_key = apisix_consumer.get_consumer_key_from_credential_key(key)
         local res, err = core.etcd.get(consumer_key, false)
@@ -282,20 +301,26 @@ function _M:put(id, conf, sub_path, args)
         end
     end
 
+    --  配置时间修改
     if self.name ~= "plugin_metadata" then
         local ok, err = utils.inject_conf_with_prev_conf(self.kind, key, conf)
         if not ok then
             return 503, {error_msg = err}
         end
     else
+        -- 特殊处理，直接将 id 添加到配置 conf。
         conf.id = id
     end
 
+    -- 从 args 中提取 TTL（存活时间），用于设置 etcd 键的过期时间
     local ttl = nil
     if args then
         ttl = args.ttl
     end
 
+    -- 更新 etcd
+    -- core.etcd.set：将 key 和 conf 写入 etcd，支持 TTL。
+    -- 错误处理：如果写入失败，记录日志并返回 HTTP 状态码 503（服务不可用）
     local res, err = core.etcd.set(key, conf, ttl)
     if not res then
         core.log.error("failed to put ", self.kind, "[", key, "] to etcd: ", err)
@@ -461,7 +486,9 @@ function _M:patch(id, conf, sub_path, args)
     return res.status, res.body
 end
 
-
+-- setmetatable 是 Lua 元表机制的核心，用于为普通表赋予新的行为或功能。
+-- 通过配合 __index, __newindex, __add 等元方法，可以实现继承、运算符重载、自定义输出等高级特性
+-- mt.__index = _M：为新对象设定默认的字段查找表 _M，即模块本身
 function _M.new(opt)
     return setmetatable(opt, mt)
 end

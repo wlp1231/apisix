@@ -1125,8 +1125,9 @@ function _M.stream_plugin_checker(item, in_cp)
     return true
 end
 
-
+-- phase: 插件执行阶段，例如 rewrite、access、header_filter 等
 function _M.run_plugin(phase, plugins, api_ctx)
+    -- plugin_run: 用于记录是否运行过插件
     local plugin_run = false
     api_ctx = api_ctx or ngx.ctx.api_ctx
     if not api_ctx then
@@ -1138,13 +1139,17 @@ function _M.run_plugin(phase, plugins, api_ctx)
         return api_ctx
     end
 
+    -- 排除特殊阶段（如 log 和 header_filter），这些阶段的处理逻辑稍后单独执行
     if phase ~= "log"
         and phase ~= "header_filter"
         and phase ~= "body_filter"
         and phase ~= "delayed_body_filter"
     then
+        -- 遍历 plugins，步长为 2，plugins[i] 是插件对象，plugins[i + 1] 是对应的配置对象
         for i = 1, #plugins, 2 do
             local phase_func
+            -- 如果阶段是 rewrite_in_consumer，并且插件类型是 auth，标记跳过。
+            -- 否则获取当前阶段的处理函数 phase_func
             if phase == "rewrite_in_consumer" then
                 if plugins[i].type == "auth" then
                     plugins[i + 1]._skip_rewrite_in_consumer = true
@@ -1154,19 +1159,26 @@ function _M.run_plugin(phase, plugins, api_ctx)
                 phase_func = plugins[i][phase]
             end
 
+            -- 如果当前阶段是 rewrite_in_consumer 并且插件配置中标记了跳过，则直接跳到下一个插件
             if phase == "rewrite_in_consumer" and plugins[i + 1]._skip_rewrite_in_consumer then
                 goto CONTINUE
             end
 
             if phase_func then
                 local conf = plugins[i + 1]
+                -- 检查插件的元信息过滤器（meta_filter）是否允许当前插件执行。
+                -- 如果不允许，跳过当前插件
                 if not meta_filter(api_ctx, plugins[i]["name"], conf)then
                     goto CONTINUE
                 end
 
+                -- 调用插件的处理函数 phase_func，传入插件配置 conf 和上下文 api_ctx。
+                -- 如果返回了 code 或 body，说明插件处理结束，并可能中断请求流程。
                 plugin_run = true
                 api_ctx._plugin_name = plugins[i]["name"]
                 local code, body = phase_func(conf, api_ctx)
+                -- 如果返回 code >= 400（错误状态码），日志记录警告，并根据配置返回自定义错误响应（conf._meta.error_response）。
+                -- 如果不是 HTTP 请求，调用 ngx_exit 中断流程。
                 api_ctx._plugin_name = nil
                 if code or body then
                     if is_http then
@@ -1197,6 +1209,7 @@ function _M.run_plugin(phase, plugins, api_ctx)
         return api_ctx, plugin_run
     end
 
+    -- 如果阶段是 log、header_filter 或其他未过滤的特殊阶段，这段代码负责执行对应插件逻辑
     for i = 1, #plugins, 2 do
         local phase_func = plugins[i][phase]
         local conf = plugins[i + 1]
@@ -1214,33 +1227,44 @@ end
 
 function _M.run_global_rules(api_ctx, global_rules, phase_name)
     if global_rules and #global_rules > 0 then
+        -- 备份 api_ctx 的原始配置信息，以便在函数执行完后恢复。
         local orig_conf_type = api_ctx.conf_type
         local orig_conf_version = api_ctx.conf_version
         local orig_conf_id = api_ctx.conf_id
 
+        -- 如果 phase_name 为空，则将 global_rules 保存到 api_ctx.global_rules，表明正在运行全局规则。
         if phase_name == nil then
             api_ctx.global_rules = global_rules
         end
 
+        -- 从表池（tablepool）中获取一个用于存储插件的表，以减少 Lua 表的创建和销毁，优化性能。
         local plugins = core.tablepool.fetch("plugins", 32, 0)
         local values = global_rules
         local route = api_ctx.matched_route
+        -- 使用 config_util.iterate_values 遍历所有全局规则。对于每个规则，执行以下步骤
         for _, global_rule in config_util.iterate_values(values) do
+            -- 将当前规则的配置信息写入 api_ctx，标明正在处理的规则类型、版本和 ID
             api_ctx.conf_type = "global_rule"
             api_ctx.conf_version = global_rule.modifiedIndex
             api_ctx.conf_id = global_rule.value.id
 
+            -- 清空之前使用的 plugins 表，为当前规则重新加载插件
             core.table.clear(plugins)
+            -- 使用 _M.filter 函数根据 global_rule 和 route 筛选出当前规则适用的插件，并存入 plugins 表
             plugins = _M.filter(api_ctx, global_rule, plugins, route)
+            -- 如果 phase_name 为空，运行 rewrite 和 access 阶段的插件
             if phase_name == nil then
                 _M.run_plugin("rewrite", plugins, api_ctx)
                 _M.run_plugin("access", plugins, api_ctx)
             else
+                -- 如果指定了 phase_name，仅运行该阶段的插件。
                 _M.run_plugin(phase_name, plugins, api_ctx)
             end
         end
+        -- 将 plugins 表归还给表池，供后续复用，避免内存泄漏。
         core.tablepool.release("plugins", plugins)
 
+        -- 恢复 api_ctx 的配置信息，确保不会影响其他逻辑
         api_ctx.conf_type = orig_conf_type
         api_ctx.conf_version = orig_conf_version
         api_ctx.conf_id = orig_conf_id

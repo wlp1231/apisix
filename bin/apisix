@@ -17,6 +17,7 @@
 # limitations under the License.
 #
 
+# 查找入口文件是否存在，不同的安装方式寻找不同文件夹下的apisix.lua
 if [ -s './apisix/cli/apisix.lua' ]; then
     # install via source
     APISIX_LUA=./apisix/cli/apisix.lua
@@ -28,12 +29,13 @@ else
     APISIX_LUA=/usr/local/apisix/apisix/cli/apisix.lua
 fi
 
-# find the openresty
+# find the openresty,设置openresty可执行文件路径并将版本号存为整数，获取系统lua版本
 OR_BIN=$(command -v openresty || exit 1)
 OR_EXEC=${OR_BIN:-'/usr/local/openresty-debug/bin/openresty'}
 OR_VER=$(openresty -v 2>&1 | awk -F '/' '{print $2}' | awk -F '.' '{print $1 * 100 + $2}')
 LUA_VERSION=$(lua -v 2>&1| grep -E -o  "Lua [0-9]+.[0-9]+")
 
+# 检查版本，获取路径，使用luajit启动apisxi.lua，并传入所有参数
 if [[ -e $OR_EXEC && "$OR_VER" -ge 119 ]]; then
     # OpenResty version is >= 1.19, use luajit by default
     ROOT=$(${OR_EXEC} -V 2>&1 | grep prefix | grep -Eo 'prefix=(.*)/nginx\s+--' | grep -Eo '/.*/')

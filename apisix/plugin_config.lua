@@ -53,6 +53,7 @@ function _M.get(id)
 end
 
 
+-- 将 plugin_config 的插件信息增量合并到 route_conf，同时备份和恢复原始数据
 function _M.merge(route_conf, plugin_config)
     if route_conf.prev_plugin_config_ver == plugin_config.modifiedIndex then
         return route_conf

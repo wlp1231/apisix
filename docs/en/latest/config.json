@@ -72,16 +72,12 @@
           "items": [
             "plugins/batch-requests",
             "plugins/redirect",
-            "plugins/echo",
-            "plugins/gzip",
             "plugins/brotli",
-            "plugins/real-ip",
             "plugins/server-info",
             "plugins/ext-plugin-pre-req",
             "plugins/ext-plugin-post-req",
             "plugins/ext-plugin-post-resp",
             "plugins/inspect",
-            "plugins/ocsp-stapling",
             "plugins/ai-content-moderation"
           ]
         },
@@ -89,18 +85,11 @@
           "type": "category",
           "label": "Transformation",
           "items": [
-            "plugins/ai-prompt-decorator",
-            "plugins/response-rewrite",
-            "plugins/proxy-rewrite",
             "plugins/grpc-transcode",
             "plugins/grpc-web",
-            "plugins/ai-prompt-template",
             "plugins/fault-injection",
-            "plugins/mocking",
-            "plugins/degraphql",
             "plugins/body-transformer",
             "plugins/ai-proxy",
-            "plugins/attach-consumer-label",
             "plugins/ai-rag"
           ]
         },
@@ -136,7 +125,6 @@
             "plugins/referer-restriction",
             "plugins/consumer-restriction",
             "plugins/csrf",
-            "plugins/public-api",
             "plugins/gm",
             "plugins/chaitin-waf"
           ]
@@ -149,7 +137,6 @@
             "plugins/limit-conn",
             "plugins/limit-count",
             "plugins/proxy-cache",
-            "plugins/request-validation",
             "plugins/proxy-mirror",
             "plugins/api-breaker",
             "plugins/traffic-split",
@@ -177,7 +164,6 @@
               "label": "Metrics",
               "items": [
                 "plugins/prometheus",
-                "plugins/node-status",
                 "plugins/datadog"
               ]
             },
@@ -185,21 +171,11 @@
               "type": "category",
               "label": "Loggers",
               "items": [
-                "plugins/http-logger",
-                "plugins/skywalking-logger",
-                "plugins/tcp-logger",
                 "plugins/kafka-logger",
-                "plugins/rocketmq-logger",
-                "plugins/udp-logger",
-                "plugins/clickhouse-logger",
                 "plugins/syslog",
                 "plugins/log-rotate",
                 "plugins/error-log-logger",
-                "plugins/sls-logger",
-                "plugins/google-cloud-logging",
-                "plugins/splunk-hec-logging",
                 "plugins/file-logger",
-                "plugins/loggly",
                 "plugins/elasticsearch-logger",
                 "plugins/tencent-cloud-cls",
                 "plugins/loki-logger"
@@ -308,13 +284,8 @@
           "label": "Discovery",
           "items": [
             "discovery",
-            "discovery/dns",
-            "discovery/consul",
-            "discovery/consul_kv",
             "discovery/nacos",
-            "discovery/eureka",
-            "discovery/control-plane-service-discovery",
-            "discovery/kubernetes"
+            "discovery/control-plane-service-discovery"
           ]
         },
         {

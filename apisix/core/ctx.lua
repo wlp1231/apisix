@@ -363,13 +363,19 @@ function _M.register_var(name, getter, opts)
 end
 
 function _M.set_vars_meta(ctx)
+    -- 使用 tablepool 创建了一个表 var，用来缓存变量。
+    -- tablepool.fetch 是 APISIX 提供的一种优化，避免频繁分配和释放 Lua 表。
     local var = tablepool.fetch("ctx_var", 0, 32)
+    -- 添加了一个 _cache 字段，用于缓存已经访问过的变量值。
     if not var._cache then
         var._cache = {}
     end
 
+    -- _request 保存当前请求的上下文。
+    -- _ctx 保存当前 API 上下文。
     var._request = get_request()
     var._ctx = ctx
+    -- var 表被设置了元表 mt
     setmetatable(var, mt)
     ctx.var = var
 end
