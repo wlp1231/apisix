@@ -20,7 +20,7 @@ version = "master-0"
 supported_platforms = {"linux"}
 
 source = {
-    url = "git://github.com/apache/apisix",
+    url = "git://github.com/wlp1231/apisix",
     branch = "master",
 }
 
