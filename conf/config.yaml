@@ -22,7 +22,7 @@ deployment:
       ip: 0.0.0.0
     enable_admin_cors: true
     admin_api_version: v3
-    admin_key_required: true
+    admin_key_required: false
   config_provider: etcd
   role_traditional:
     config_provider: etcd
