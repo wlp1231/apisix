@@ -589,7 +589,7 @@ http {
         set $upstream_host               $http_host;
         set $upstream_uri                '';
 
-        location /apisix/admins {
+        location /nwpuapi/admin {
             {%if allow_admin then%}
                 {% for _, allow_ip in ipairs(allow_admin) do %}
                 allow {*allow_ip*};

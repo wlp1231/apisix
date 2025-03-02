@@ -453,22 +453,22 @@ end
 
 local uri_route = {
     {
-        paths = [[/apisix/admins]],
+        paths = [[/nwpuapi/admin]],
         methods = {"HEAD"},
         handler = head,
     },
     {
-        paths = [[/apisix/admins/*]],
+        paths = [[/nwpuapi/admin/*]],
         methods = {"GET", "PUT", "POST", "DELETE", "PATCH"},
         handler = run,
     },
     {
-        paths = [[/apisix/admins/plugins/list]],
+        paths = [[/nwpuapi/admin/plugins/list]],
         methods = {"GET"},
         handler = get_plugins_list,
     },
     {
-        paths = [[/apisix/admins/schema/validate/*]],
+        paths = [[/nwpuapi/admin/schema/validate/*]],
         methods = {"POST"},
         handler = schema_validate,
     },

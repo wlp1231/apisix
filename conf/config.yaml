@@ -35,6 +35,17 @@ deployment:
     tls:
       verify: true
     startup_retry: 2
+discovery:
+  nacos:
+    host:
+    - "http://127.0.0.1:8848"
+    prefix: "/nacos/v1/"
+    fetch_interval: 30  
+    weight: 100          
+    timeout:
+      connect: 2000     
+      send: 2000        
+      read: 5000 
 graphql:
   max_size: 1048576
 stream_plugins:
